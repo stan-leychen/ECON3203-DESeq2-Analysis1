@@ -1,0 +1,558 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+#if (!requireNamespace("BiocManager"))
+#  install.packages("BiocManager")
+BiocManager::install(c("limma", "edgeR", "Glimma", "org.Mm.eg.db", "gplots", "RColorBrewer", "NMF", "BiasedUrn", "WGCNA", "DOSE", "pathview", "clusterProfiler", "biomaRt", "org.Hs.eg.db", "org.Dr.eg.db", "DESeq2", "apeglm",
+                       "ashr", "DEGreport", "tidyverse", "AnnotationHub", "ensembldb", "annotables", "enrichplot",
+                       "DESeq2", "ggnewscale"))
+```
+
+
+
+```{r}
+library(edgeR)
+library(limma)
+library(Glimma)
+require(org.Mm.eg.db)
+require(org.Hs.eg.db)
+library(org.Dr.eg.db)
+library(gplots)
+library(RColorBrewer)
+library(NMF)
+library(tidyverse)
+library(WGCNA)
+library(DOSE)
+library(pathview)
+library(clusterProfiler)
+library(readr)
+library(dplyr)
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(apeglm)
+library(ashr)
+library(ggrepel)
+library(AnnotationHub)
+library(ensembldb)
+library(annotables)
+library(enrichplot)
+library(DESeq2)
+library(DEGreport)
+library(ggnewscale)
+
+```
+
+```{r}
+healthy_patients <- read_csv("D:/Users/Stanley/Desktop/Data3001/all_healthy_patients")
+covid_patients <- read_csv("D:/Users/Stanley/Desktop/Data3001/all_covid_patients")
+
+cols <- sapply(healthy_patients, is.numeric)
+healthy_patients[cols] <- 10^healthy_patients[cols] -1
+healthy_patients[2] <- log10(healthy_patients[2] + 1)
+
+cols <- sapply(covid_patients, is.numeric)
+covid_patients[cols] <- 10^covid_patients[cols] -1
+covid_patients[2] <- log10(covid_patients[2] + 1)
+
+covid_patients$Patient <- paste("covid", covid_patients$Patient , sep="_")
+healthy_patients$Patient <- paste("healthy", healthy_patients$Patient , sep="_")
+
+all_patients <- rbind(covid_patients, healthy_patients)
+
+head(all_patients)
+
+dim(covid_patients)
+
+all_patients <- all_patients[,-1]
+
+  aggregate_covid = aggregate(all_patients[, -which(names(all_patients) == "Patient")] , by=list(Patient=all_patients$Patient), FUN=sum)
+
+#convert patient names to row names
+samp2 <- aggregate_covid[,-1]
+rownames(samp2) <- aggregate_covid[,1]
+aggregate_covid <- samp2
+t_aggregate_covid <- t(aggregate_covid)
+t_aggregate_covid
+# Save a single object to a file
+saveRDS(t_aggregate_covid, "t_aggregate_covid.rds")
+
+```
+
+
+
+```{r}
+t_aggregate_covid <- readRDS("t_aggregate_covid_cd8_bcells.rds")# Obtain CPMs
+head(t_aggregate_covid)
+```
+```{r}
+covid_01 <- t_aggregate_covid[,"covid_01"]
+covid_02 <- t_aggregate_covid[,"covid_08"]
+
+healthy_01 <- t_aggregate_covid[,"healthy_01"]
+healthy_02 <- t_aggregate_covid[,"healthy_07"]
+write.csv(x=covid_01, file="cd8-covid_01")
+write.csv(x=covid_02, file="bcell-covid_01")
+write.csv(x=healthy_01, file="cd8-healthy_01")
+write.csv(x=healthy_02, file="bcell-healthy_01")
+
+
+t_aggregate_covid <- t_aggregate_covid[, -c(1,8,15,21)] # delete columns for Patient 1 cd8 cells and b-cells
+
+
+```
+
+```{r}
+test_df <- data.table::as.data.table(covid_01, .keep.rownames = "word")
+
+test_df$covid_01 <- covid_01
+# test_df <- setNames(data.frame(table(covid_01), table(healthy_02), table(healthy_01), table(healthy_02)), c("covid_01", "covid_02", "healthy_01", "healthy_02"))
+
+
+```
+
+
+```{r}
+
+#convert counts to DGEList object
+y <- DGEList(t_aggregate_covid)
+y
+
+sampleinfo <- matrix(c("covid", "ventilated", "discharged", "cd8","covid", "ventilated", "traecheostomy","cd8", "covid", "ventilated", "discharged", "cd8",
+                       "covid", "not ventilated", "discharged", "cd8", "covid", "ventilated", "deceased", "cd8",
+                       "covid", "not ventilated","discharged", "cd8", "covid", "ventilated", "discharged", "becll", "covid", "ventilated", "traecheostomy", "becll", "covid", "ventilated", "discharged", "becll", "covid", "not ventilated", "discharged","becll", "covid", "ventilated", "deceased","becll", "covid", "not ventilated","discharged", "becll","healthy", "not ventilated", "no treatment","cd8", "healthy", "not ventilated", "no treatment","cd8","healthy", "not ventilated", "no treatment", "cd8", "healthy", "not ventilated", "no treatment", "cd8" ,"healthy", "not ventilated", "no treatment", "cd8","healthy", "not ventilated", "no treatment", "becll", "healthy", "not ventilated", "no treatment", "becll", "healthy", "not ventilated", "no treatment", "becll", "healthy", "not ventilated", "no treatment","becll", "healthy", "not ventilated", "no treatment", "becll"
+                       ), ncol=4, byrow=TRUE)
+colnames(sampleinfo) <- c("status","treatment","clinical_outcome", "cell_origin")
+sampleinfo <- as.data.frame(sampleinfo)
+sampleinfo$status
+group <- paste(sampleinfo$status,sampleinfo$treatment, sampleinfo$clinical_outcome, sep=".")
+# Take a look
+group
+sampleinfo
+# Convert to factor
+group <- factor(group)
+# Take another look.
+group
+
+# Add the group information into the DGEList
+y$samples$group <- group
+```
+```{r}
+barplot(y$samples$lib.size/1e06, names=colnames(y), las=2, ann=FALSE, cex.names=0.75)
+mtext(side = 1, text = "Samples", line = 4)
+mtext(side = 2, text = "Library size (millions)", line = 3)
+title("Barplot of Sequence Depth")
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = round(t_aggregate_covid), colData = sampleinfo, design = ~ status)
+View(counts(dds))
+```
+
+```{r}
+dds <- estimateSizeFactors(dds)
+sizeFactors(dds)
+normalized_counts <- counts(dds, normalized=TRUE)
+write.table(normalized_counts, file="normalized_counts.txt", sep="\t", quote=F, col.names=NA)
+
+```
+
+```{r}
+### Transform counts for data visualization
+rld <- rlog(dds, blind=TRUE)
+vsd <- vst(dds, blind=FALSE)
+
+### Plot PCA 
+plotPCA(rld, intgroup="status")
+```
+
+```{r}
+# Input is a matrix of log transformed values
+
+mat <- assay(vsd)
+mat <- limma::removeBatchEffect(mat, vsd$batch)
+assay(vsd) <- mat
+vsd_mat <- assay(vsd)
+pca <- prcomp(t(vsd_mat))
+
+```
+
+```{r}
+# Create data frame with metadata and PC3 and PC4 values for input to ggplot
+df <- cbind(sampleinfo, pca$x)
+ggplot(df) + geom_point(aes(x=PC3, y=PC4, color = status))
+```
+
+
+```{r}
+# Create data frame with metadata and PC3 and PC4 values for input to ggplot
+ggplot(df) + geom_point(aes(x=PC3, y=PC4, color = treatment))
+```
+```{r}
+ggplot(df) + geom_point(aes(x=PC3, y=PC4, color = clinical_outcome))
+```
+```{r}
+### Extract the rlog matrix from the object
+rld_mat <- assay(rld)    ## assay() is function from the "SummarizedExperiment" package that was loaded when you loaded DESeq2
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat)    ## cor() is a base R function
+
+head(rld_cor)   ## check the output of cor(), make note of the rownames and colnames
+```
+
+```{r}
+### Plot heatmap
+pheatmap(rld_cor)
+```
+```{r}
+## Run analysis
+dds <- DESeq(dds)
+```
+```{r}
+## Plot dispersion estimates
+plotDispEsts(dds)
+```
+
+```{r}
+## Define contrasts, extract results table, and shrink the log2 fold changes
+
+contrast_oe <- c("status", "covid", "healthy")
+
+res_tableOE_unshrunken <- results(dds, contrast=contrast_oe, alpha = 0.05)
+
+res_tableOE <- lfcShrink(dds, contrast=contrast_oe, res=res_tableOE_unshrunken, type = "ashr")
+```
+
+```{r}
+#unshrunken results
+plotMA(res_tableOE_unshrunken, ylim=c(-2,2))
+title("MA Plot of Unshrunken Results")
+
+#shrunken results
+plotMA(res_tableOE, ylim=c(-2,2))
+title("MA Plot of Shrunken Results")
+
+```
+
+```{r}
+class(res_tableOE)
+mcols(res_tableOE, use.names=T)
+res_tableOE %>% data.frame() %>% View()
+
+```
+```{r}
+## Define contrasts, extract results table and shrink log2 fold changes
+contrast_kd <-  c("status", "covid", "healthy")
+
+res_tableKD <- results(dds, contrast=contrast_kd, alpha = 0.05)
+
+res_tableKD <- lfcShrink(dds, contrast=contrast_kd, res=res_tableKD, type = "ashr")
+```
+
+```{r}
+## Summarize results
+summary(res_tableOE)
+```
+```{r}
+### Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+```
+
+```{r}
+#convert results into a table
+res_tableOE_tb <- res_tableOE %>%
+  data.frame() %>%
+  tibble::rownames_to_column(var="gene") %>% 
+  as_tibble()
+```
+
+```{r}
+# Create tibbles including row names
+covid_meta <- sampleinfo %>% 
+  rownames_to_column(var="samplename") %>% 
+  as_tibble()
+        
+normalized_counts <- normalized_counts %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+```
+
+```{r}
+covid_meta$samplename <- c(colnames(t_aggregate_covid))
+
+```
+
+
+```{r}
+#subset that table to only keep the significant genes using our pre-defined thresholds:
+sigOE <- res_tableOE_tb %>%
+        dplyr::filter(padj < padj.cutoff & abs(log2FoldChange) > lfc.cutoff)
+```
+```{r}
+sigOE
+```
+
+
+```{r}
+res_tableKD_tb <- res_tableKD %>%
+  data.frame() %>%
+  tibble::rownames_to_column(var="gene") %>% 
+  as_tibble()
+  
+sigKD <- res_tableKD_tb %>%
+        dplyr::filter(padj < padj.cutoff & abs(log2FoldChange) > lfc.cutoff)
+```
+```{r}
+sigKD
+```
+```{r}
+summary(res_tableOE)
+```
+
+```{r}
+# Save plotcounts to a data frame object
+d <- plotCounts(dds, gene="AARS", intgroup="status", returnData=TRUE)
+
+# Plotting the MOV10 normalized counts, using the samplenames (rownames of d as labels)
+ggplot(d, aes(x = status, y = count, color = status)) + 
+  geom_point(position=position_jitter(w = 0.1,h = 0)) +
+  geom_text_repel(aes(label = rownames(d))) + 
+  theme_bw() +
+  ggtitle("AARS") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+## Order results by padj values
+top20_sigOE_genes <- res_tableOE_tb %>% 
+        arrange(padj) %>% 	#Arrange rows by padj values
+        pull(gene) %>% 		#Extract character vector of ordered genes
+        head(n=20) 		#Extract the first 20 genes
+```
+
+
+```{r}
+## normalized counts for top 20 significant genes
+top20_sigOE_norm <- normalized_counts %>%
+        dplyr::filter(gene %in% top20_sigOE_genes)
+
+write.csv(top20_sigOE_norm, "top20genes.csv")
+```
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_top20_sigOE <- top20_sigOE_norm %>%
+  gather(colnames(top20_sigOE_norm)[2:14], key = "samplename", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+View(gathered_top20_sigOE)
+```
+
+
+```{r}
+gathered_top20_sigOE <- inner_join(covid_meta, gathered_top20_sigOE)
+```
+
+```{r}
+## plot using ggplot2
+ggplot(gathered_top20_sigOE) +
+        geom_point(aes(x = gene, y = normalized_counts, color = status)) +
+        scale_y_log10() +
+        xlab("Genes") +
+        ylab("log10 Normalized Counts") +
+        ggtitle("Top 20 Significant DE Genes") +
+        theme_bw() +
+	theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+	theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+### Extract normalized expression for significant genes from the OE and control samples (4:9), and set the gene column (1) to row names
+norm_OEsig <- normalized_counts[,c(1,2:20)] %>% 
+              dplyr::filter(gene %in% sigOE$gene) %>% 
+	      data.frame() %>%
+	      column_to_rownames(var = "gene") 
+```
+
+
+```{r}
+### Annotate our heatmap (optional)
+annotation <- covid_meta %>% 
+	dplyr::select(samplename, status) %>% 
+	data.frame(row.names = "samplename")
+
+### Set a color palette
+heat_colors <- brewer.pal(6, "YlOrRd")
+
+### Run pheatmap
+pheatmap(norm_OEsig, 
+         color = heat_colors, 
+         cluster_rows = T, 
+         show_rownames = F,
+         annotation = annotation, 
+         border_color = NA, 
+         fontsize = 10, 
+         scale = "row", 
+         fontsize_row = 10, 
+         height = 20)
+```
+```{r}
+## Obtain logical vector where TRUE values denote padj values < 0.05 and fold change > 1.5 in either direction
+
+res_tableOE_tb <- res_tableOE_tb %>% 
+                  mutate(threshold_OE = padj < 0.05 & abs(log2FoldChange) >= 0.58)
+```
+
+```{r}
+## Volcano plot
+ggplot(res_tableOE_tb) +
+        geom_point(aes(x = log2FoldChange, y = -log10(padj), colour = threshold_OE)) +
+        ggtitle("covid overexpression") +
+        xlab("log2 fold change") + 
+        ylab("-log10 adjusted p-value") +
+        #scale_y_continuous(limits = c(0,50)) +
+        theme(legend.position = "none",
+              plot.title = element_text(size = rel(1.5), hjust = 0.5),
+              axis.title = element_text(size = rel(1.25)))  
+```
+
+```{r}
+## Create a column to indicate which genes to label
+res_tableOE_tb <- res_tableOE_tb %>% arrange(padj) %>% mutate(genelabels = "")
+
+res_tableOE_tb$genelabels[1:10] <- res_tableOE_tb$gene[1:10]
+
+View(res_tableOE_tb)
+```
+
+```{r}
+ggplot(res_tableOE_tb, aes(x = log2FoldChange, y = -log10(padj))) +
+        geom_point(aes(colour = threshold_OE)) +
+        geom_text_repel(aes(label = genelabels)) +
+        ggtitle("covid overexpression") +
+        xlab("log2 fold change") + 
+        ylab("-log10 adjusted p-value") +
+        theme(legend.position = "none",
+              plot.title = element_text(size = rel(1.5), hjust = 0.5),
+              axis.title = element_text(size = rel(1.25))) 
+```
+
+```{r}
+# The full model was specified previously with the `design = ~ sampletype`:
+# dds <- DESeqDataSetFromMatrix(countData = data, colData = meta, design = ~ sampletype)
+
+# Likelihood ratio test
+dds_lrt <- DESeq(dds, test="LRT", reduced = ~ 1)
+```
+
+```{r}
+# Extract results
+res_LRT <- results(dds_lrt)
+```
+
+```{r}
+# Subset the LRT results to return genes with padj < 0.05
+sig_res_LRT <- res_LRT %>%
+               data.frame() %>%
+               rownames_to_column(var="gene") %>% 
+               as_tibble() %>% 
+               dplyr::filter(padj < padj.cutoff)
+ 
+# Get sig gene lists
+sigLRT_genes <- sig_res_LRT %>% 
+                pull(gene)
+                
+length(sigLRT_genes)
+
+# Compare to numbers we had from Wald test
+nrow(sigOE)
+nrow(sigKD)
+```
+
+
+```{r}
+## Explore the grch37 table loaded by the annotables library
+grch37
+
+## Return the IDs for the gene symbols in the DE results
+idx <- grch37$symbol %in% rownames(res_tableOE)
+
+ids <- grch37[idx, ]
+
+## The gene names can map to more than one Ensembl ID (some genes change ID over time), 
+## so we need to remove duplicate IDs prior to assessing enriched GO terms
+non_duplicates <- which(duplicated(ids$symbol) == FALSE)
+
+ids <- ids[non_duplicates, ] 
+
+## Merge the IDs with the results 
+res_ids <- inner_join(res_tableOE_tb, ids, by=c("gene"="symbol"))      
+```
+
+```{r}
+## Create background dataset for hypergeometric testing using all genes tested for significance in the results                 
+allOE_genes <- as.character(res_ids$ensgene)
+
+## Extract significant results
+sigOE <- dplyr::filter(res_ids, padj < 0.05)
+
+sigOE_genes <- as.character(sigOE$ensgene)
+```
+
+```{r}
+## Run GO enrichment analysis 
+ego <- enrichGO(gene = sigOE_genes, 
+                universe = allOE_genes,
+                keyType = "ENSEMBL",
+                OrgDb = org.Hs.eg.db, 
+                ont = "BP", 
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.05, 
+                readable = TRUE)
+                
+## Output results from GO analysis to a table
+cluster_summary <- data.frame(ego)
+
+write.csv(cluster_summary, "clusterProfiler_covid.csv")
+```
+
+```{r}
+## Dotplot 
+dotplot(ego, showCategory=10)
+```
+
+```{r}
+## Enrichmap clusters the 50 most significant (by padj) GO terms to visualize relationships between terms
+emapplot(ego, showCategory = 50)
+```
+
+```{r}
+## To color genes by log2 fold changes, we need to extract the log2 fold changes from our results table creating a named vector
+OE_foldchanges <- sigOE$log2FoldChange
+
+names(OE_foldchanges) <- sigOE$gene
+
+## Cnetplot details the genes associated with one or more terms - by default gives the top 5 significant terms (by padj)
+cnetplot(ego, 
+         categorySize="pvalue", 
+         showCategory = 5, 
+         foldChange=OE_foldchanges, 
+         vertex.label.font=6)
+         
+## If some of the high fold changes are getting drowned out due to a large range, you could set a maximum fold change value
+OE_foldchanges <- ifelse(OE_foldchanges > 2, 2, OE_foldchanges)
+OE_foldchanges <- ifelse(OE_foldchanges < -2, -2, OE_foldchanges)
+
+cnetplot(ego, 
+         categorySize="pvalue", 
+         showCategory = 5, 
+         foldChange=OE_foldchanges, 
+         vertex.label.font=6)
+```
+
+
+
